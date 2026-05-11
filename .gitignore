@@ -1,0 +1,20 @@
+.DS_Store
+.clang-module-cache/
+.pycache/
+*.pyc
+
+# Local builds and temporary artifacts
+*.app
+*.icns
+*.iconset/
+FlowCompileCheck
+
+# User-specific Google OAuth material
+credentials.json
+token.pickle
+config.json
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp

@@ -78,8 +78,6 @@ Flow는 사용자의 Google Tasks를 읽기 위해 Google OAuth 인증이 필요
 - Task Left Click: List open
 - Task Right Click: Terminate
 - List Click: Select Current Task
-- `Esc`: 앱 종료
-- Dock 아이콘 우클릭 후 `Quit`: 앱 종료
 
 ## 설정
 

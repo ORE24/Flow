@@ -71,24 +71,6 @@ Flow는 사용자의 Google Tasks를 읽기 위해 Google OAuth 인증이 필요
 ~/Library/Application Support/Flow/credentials.json
 ```
 
-`~`는 현재 사용자 홈 폴더입니다. 예를 들어 이 컴퓨터에서는 보통 아래 경로입니다.
-
-```text
-/Users/doltas
-```
-
-따라서 전체 경로는 다음처럼 해석됩니다.
-
-```text
-/Users/doltas/Library/Application Support/Flow/credentials.json
-```
-
-Finder에서 바로 열려면:
-
-```bash
-open "$HOME/Library/Application Support/Flow"
-```
-
 처음 실행하면 브라우저가 열리고 Google 로그인을 한 번 요청합니다. 인증이 완료되면 토큰은 Keychain에 저장됩니다.
 
 ## 사용법

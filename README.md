@@ -8,19 +8,17 @@ Flow는 Google Tasks의 특정 목록을 읽어 macOS 화면 상단에 “지금
 
 ## 주요 기능
 
-- macOS 메뉴바 근처에 현재 선택한 task 표시
-- Google Tasks의 미완료 task를 원래 정렬 순서대로 드롭다운에 표시
-- 드롭다운에서 현재 집중할 task 직접 선택
-- 앱 시작 시 1회 갱신, 드롭다운을 열 때 즉시 갱신
-- 백그라운드 polling 없음
-- task 선택 상태 유지
-- 여러 모니터에 오버레이 표시
-- MacBook 노치가 있는 화면에서는 노치 바로 아래 중앙에 표시
-- Dock 아이콘과 실행 표시 점 지원
-- 오른쪽 클릭, `Esc`, Dock 메뉴로 종료
-- 로그인 시 자동 실행 지원
-- OAuth 토큰은 macOS Keychain에 저장
-- 기존 `StudyTaskOverlay` 설정 자동 마이그레이션
+### 1. 현재 집중할 task를 화면 상단에 고정
+
+Flow는 Google Tasks에서 가져온 task 중 사용자가 선택한 항목을 macOS 메뉴바 근처에 작게 표시합니다. 여러 모니터에서는 각 화면에 오버레이를 띄우고, MacBook 노치가 있는 화면에서는 노치 바로 아래 중앙에 배치합니다.
+
+### 2. Google Tasks 목록에서 바로 선택
+
+상단 오버레이를 클릭하면 Google Tasks의 미완료 task가 원래 정렬 순서대로 드롭다운에 표시됩니다. 드롭다운에서 항목을 고르면 그 task가 현재 집중할 일로 고정되고, 선택 상태는 앱을 다시 실행해도 유지됩니다.
+
+### 3. 가볍고 안전한 네이티브 macOS 앱
+
+앱 시작 시와 드롭다운을 열 때만 Google Tasks를 갱신하므로 백그라운드 polling을 하지 않습니다. OAuth 토큰은 macOS Keychain에 저장하고, Dock 아이콘, 로그인 자동 실행, 오른쪽 클릭/`Esc` 종료, 기존 `StudyTaskOverlay` 설정 마이그레이션을 지원합니다.
 
 ## 요구 사항
 

@@ -2,11 +2,9 @@
 set -euo pipefail
 
 APP_NAME="Flow"
-OLD_APP_NAME="StudyTaskOverlay"
 STAGING_ROOT="${TMPDIR:-/tmp}/flow-build"
 APP_DIR="$STAGING_ROOT/$APP_NAME.app"
 INSTALL_DIR="/Applications/$APP_NAME.app"
-OLD_INSTALL_DIR="/Applications/$OLD_APP_NAME.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -70,9 +68,6 @@ else
 fi
 
 ditto "$APP_DIR" "$INSTALL_DIR"
-if [[ -d "$OLD_INSTALL_DIR" && "$OLD_INSTALL_DIR" != "$INSTALL_DIR" ]]; then
-  rm -rf "$OLD_INSTALL_DIR"
-fi
 rm -rf "$STAGING_ROOT"
 
 echo "$INSTALL_DIR"

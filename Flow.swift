@@ -5,10 +5,7 @@ import Network
 import Security
 
 private let appIdentifier = "local.flow"
-private let legacyAppIdentifiers = ["local.study-task-overlay"]
 private let appName = "Flow"
-private let legacyAppNames = ["StudyTaskOverlay"]
-private let legacyDotDirectoryName = ".study_task_overlay"
 private let selectedTaskIDKey = "selectedTaskID"
 
 private enum FlowTheme {
@@ -31,27 +28,23 @@ struct AppConfig: Codable {
     var taskList: String
     var fallbackText: String
     var maxVisibleTasks: Int
-    var debugErrorMessage: String?
 
     enum CodingKeys: String, CodingKey {
         case taskList = "task_list"
         case fallbackText = "fallback_text"
         case maxVisibleTasks = "max_visible_tasks"
-        case debugErrorMessage = "debug_error_message"
     }
 
     static let defaultValue = AppConfig(
         taskList: "TODAY TASK",
         fallbackText: "Google Tasks 연결 필요",
-        maxVisibleTasks: 10,
-        debugErrorMessage: nil
+        maxVisibleTasks: 10
     )
 
-    init(taskList: String, fallbackText: String, maxVisibleTasks: Int, debugErrorMessage: String?) {
+    init(taskList: String, fallbackText: String, maxVisibleTasks: Int) {
         self.taskList = taskList
         self.fallbackText = fallbackText
         self.maxVisibleTasks = max(1, maxVisibleTasks)
-        self.debugErrorMessage = debugErrorMessage
     }
 
     init(from decoder: Decoder) throws {
@@ -60,16 +53,11 @@ struct AppConfig: Codable {
         taskList = try container.decodeIfPresent(String.self, forKey: .taskList) ?? defaults.taskList
         fallbackText = try container.decodeIfPresent(String.self, forKey: .fallbackText) ?? defaults.fallbackText
         maxVisibleTasks = max(1, try container.decodeIfPresent(Int.self, forKey: .maxVisibleTasks) ?? defaults.maxVisibleTasks)
-        debugErrorMessage = try container.decodeIfPresent(String.self, forKey: .debugErrorMessage)
-        if debugErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
-            debugErrorMessage = nil
-        }
     }
 }
 
 final class AppPaths {
     let appSupportDirectory: URL
-    let legacyDirectories: [URL]
     let configURL: URL
     let credentialsURL: URL
 
@@ -77,14 +65,10 @@ final class AppPaths {
         let fileManager = FileManager.default
         let supportRoot = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         appSupportDirectory = supportRoot.appendingPathComponent(appName, isDirectory: true)
-        legacyDirectories = legacyAppNames.map { supportRoot.appendingPathComponent($0, isDirectory: true) }
-            + [fileManager.homeDirectoryForCurrentUser.appendingPathComponent(legacyDotDirectoryName, isDirectory: true)]
         configURL = appSupportDirectory.appendingPathComponent("config.json")
         credentialsURL = appSupportDirectory.appendingPathComponent("credentials.json")
 
         try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
-        try migrateLegacyFile(named: "credentials.json")
-        try migrateLegacyFile(named: "config.json")
 
         if !fileManager.fileExists(atPath: configURL.path) {
             let data = try JSONEncoder.pretty.encode(AppConfig.defaultValue)
@@ -100,21 +84,6 @@ final class AppPaths {
             try normalizedData.write(to: configURL, options: .atomic)
         }
         return config
-    }
-
-    private func migrateLegacyFile(named name: String) throws {
-        let fileManager = FileManager.default
-        let destination = appSupportDirectory.appendingPathComponent(name)
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            return
-        }
-        for directory in legacyDirectories {
-            let source = directory.appendingPathComponent(name)
-            if fileManager.fileExists(atPath: source.path) {
-                try fileManager.copyItem(at: source, to: destination)
-                return
-            }
-        }
     }
 }
 
@@ -242,23 +211,9 @@ struct TokenResponse: Decodable {
 
 final class KeychainTokenStore {
     private let service = appIdentifier
-    private let legacyServices = legacyAppIdentifiers
     private let account = "google-oauth-token"
 
     func load() -> OAuthToken? {
-        if let token = load(service: service) {
-            return token
-        }
-        for legacyService in legacyServices {
-            if let token = load(service: legacyService) {
-                try? save(token)
-                return token
-            }
-        }
-        return nil
-    }
-
-    private func load(service: String) -> OAuthToken? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -1138,10 +1093,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
     }
 
     private func refreshTask() {
-        if let debugErrorMessage = config.debugErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !debugErrorMessage.isEmpty {
-            updateStatus(debugErrorMessage)
-            return
-        }
         guard let tasksClient else {
             updateStatus(config.fallbackText)
             return

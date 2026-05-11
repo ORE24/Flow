@@ -2,13 +2,7 @@
 set -euo pipefail
 
 PLIST="$HOME/Library/LaunchAgents/local.flow.plist"
-OLD_PLIST="$HOME/Library/LaunchAgents/local.study-task-overlay.plist"
 mkdir -p "$HOME/Library/LaunchAgents"
-
-if [[ -f "$OLD_PLIST" ]]; then
-  launchctl unload "$OLD_PLIST" 2>/dev/null || true
-  rm -f "$OLD_PLIST"
-fi
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

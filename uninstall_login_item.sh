@@ -1,16 +1,11 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-PLISTS=(
-  "$HOME/Library/LaunchAgents/local.flow.plist"
-  "$HOME/Library/LaunchAgents/local.study-task-overlay.plist"
-)
+PLIST="$HOME/Library/LaunchAgents/local.flow.plist"
 
-for plist in "${PLISTS[@]}"; do
-  if [[ -f "$plist" ]]; then
-    launchctl unload "$plist" 2>/dev/null || true
-    rm -f "$plist"
-  fi
-done
+if [[ -f "$PLIST" ]]; then
+  launchctl unload "$PLIST" 2>/dev/null || true
+  rm -f "$PLIST"
+fi
 
 echo "Flow login item removed"

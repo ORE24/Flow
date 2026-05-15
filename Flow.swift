@@ -90,9 +90,9 @@ final class AppPaths {
 }
 
 struct TimeTrackingData: Codable {
-    var totalsByTaskID: [String: Int]
+    var totalsByDate: [String: [String: Int]]
 
-    static let empty = TimeTrackingData(totalsByTaskID: [:])
+    static let empty = TimeTrackingData(totalsByDate: [:])
 }
 
 final class TimeTracker {
@@ -100,14 +100,22 @@ final class TimeTracker {
     private var data: TimeTrackingData
     private var activeTaskID: String?
     private var activeStartedAt: Date?
+    private var activeDateKey: String
 
     init(storageURL: URL) {
         self.storageURL = storageURL
+        activeDateKey = Self.todayKey()
         if
             let storedData = try? Data(contentsOf: storageURL),
             let decoded = try? JSONDecoder().decode(TimeTrackingData.self, from: storedData)
         {
             data = decoded
+        } else if
+            let storedData = try? Data(contentsOf: storageURL),
+            let legacy = try? JSONDecoder().decode([String: Int].self, from: storedData)
+        {
+            data = TimeTrackingData(totalsByDate: [activeDateKey: legacy])
+            save()
         } else {
             data = .empty
         }
@@ -115,6 +123,7 @@ final class TimeTracker {
 
     func start(taskID: String?) {
         commitActiveElapsed(restart: false)
+        activeDateKey = Self.todayKey()
         guard let taskID, !taskID.hasPrefix("__") else {
             activeTaskID = nil
             activeStartedAt = nil
@@ -127,44 +136,61 @@ final class TimeTracker {
     }
 
     func elapsedSeconds(for taskID: String?) -> Int {
+        rolloverIfNeeded()
         guard let taskID, !taskID.hasPrefix("__") else {
             return 0
         }
-        var seconds = data.totalsByTaskID[taskID, default: 0]
+        let today = Self.todayKey()
+        var seconds = data.totalsByDate[today, default: [:]][taskID, default: 0]
         if taskID == activeTaskID, let activeStartedAt {
             seconds += max(0, Int(Date().timeIntervalSince(activeStartedAt)))
         }
         return seconds
     }
 
+    func todayTotalSeconds() -> Int {
+        rolloverIfNeeded()
+        let today = Self.todayKey()
+        var seconds = data.totalsByDate[today, default: [:]].values.reduce(0, +)
+        if let activeStartedAt {
+            seconds += max(0, Int(Date().timeIntervalSince(activeStartedAt)))
+        }
+        return seconds
+    }
+
     func adjustActiveTask(byMinutes minutes: Int) {
+        rolloverIfNeeded()
         guard let activeTaskID, !activeTaskID.hasPrefix("__") else {
             return
         }
         commitActiveElapsed(restart: true)
-        let adjustedSeconds = data.totalsByTaskID[activeTaskID, default: 0] + minutes * 60
-        data.totalsByTaskID[activeTaskID] = max(0, adjustedSeconds)
+        let today = Self.todayKey()
+        let adjustedSeconds = data.totalsByDate[today, default: [:]][activeTaskID, default: 0] + minutes * 60
+        data.totalsByDate[today, default: [:]][activeTaskID] = max(0, adjustedSeconds)
         save()
     }
 
     func resetActiveTask() {
+        rolloverIfNeeded()
         guard let activeTaskID, !activeTaskID.hasPrefix("__") else {
             return
         }
-        data.totalsByTaskID[activeTaskID] = 0
+        data.totalsByDate[Self.todayKey(), default: [:]][activeTaskID] = 0
         activeStartedAt = Date()
         save()
     }
 
     func commitActiveElapsed(restart: Bool) {
+        rolloverIfNeeded()
         guard let activeTaskID, !activeTaskID.hasPrefix("__"), let activeStartedAt else {
             return
         }
         let elapsed = max(0, Int(Date().timeIntervalSince(activeStartedAt)))
         if elapsed > 0 {
-            data.totalsByTaskID[activeTaskID, default: 0] += elapsed
+            data.totalsByDate[activeDateKey, default: [:]][activeTaskID, default: 0] += elapsed
         }
         self.activeStartedAt = restart ? Date() : nil
+        activeDateKey = Self.todayKey()
         save()
     }
 
@@ -180,6 +206,36 @@ final class TimeTracker {
         let hours = clamped / 3600
         let minutes = (clamped % 3600) / 60
         return String(format: "%02d:%02d", hours, minutes)
+    }
+
+    private func rolloverIfNeeded() {
+        let today = Self.todayKey()
+        guard activeDateKey != today else {
+            return
+        }
+        commitActiveElapsedBeforeRollover()
+        activeDateKey = today
+        activeStartedAt = activeTaskID == nil ? nil : Date()
+        save()
+    }
+
+    private func commitActiveElapsedBeforeRollover() {
+        guard let activeTaskID, !activeTaskID.hasPrefix("__"), let activeStartedAt else {
+            return
+        }
+        let elapsed = max(0, Int(Date().timeIntervalSince(activeStartedAt)))
+        if elapsed > 0 {
+            data.totalsByDate[activeDateKey, default: [:]][activeTaskID, default: 0] += elapsed
+        }
+    }
+
+    private static func todayKey() -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
     }
 }
 
@@ -898,9 +954,9 @@ final class DropdownView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func setTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, maxVisibleTasks: Int) {
+    func setTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, todayTotalSeconds: Int, maxVisibleTasks: Int) {
         self.maxVisibleTasks = max(1, maxVisibleTasks)
-        timeLabel.stringValue = "Time \(TimeTracker.format(seconds: selectedElapsedSeconds))"
+        timeLabel.stringValue = "Today \(TimeTracker.format(seconds: todayTotalSeconds)) / 24:00 · Task \(TimeTracker.format(seconds: selectedElapsedSeconds))"
         stackView.arrangedSubviews.forEach { view in
             stackView.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -934,7 +990,7 @@ final class DropdownView: NSView {
         let documentSpacing = rowSpacing * CGFloat(max(tasks.count - 1, 0))
         let documentHeight = verticalPadding + rowHeight * rowCount + documentSpacing
         preferredSize = NSSize(
-            width: min(max(ceil(rect.width) + horizontalPadding, 300), 420),
+            width: min(max(ceil(rect.width) + horizontalPadding, 380), 520),
             height: verticalPadding + rowHeight * visibleRowCount + visibleSpacing
         )
         let documentSize = NSSize(width: preferredSize.width - horizontalPadding, height: documentHeight - verticalPadding)
@@ -1033,8 +1089,14 @@ final class ScreenOverlay {
         }
     }
 
-    func updateTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, maxVisibleTasks: Int) {
-        dropdownView.setTasks(tasks, selectedID: selectedID, selectedElapsedSeconds: selectedElapsedSeconds, maxVisibleTasks: maxVisibleTasks)
+    func updateTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, todayTotalSeconds: Int, maxVisibleTasks: Int) {
+        dropdownView.setTasks(
+            tasks,
+            selectedID: selectedID,
+            selectedElapsedSeconds: selectedElapsedSeconds,
+            todayTotalSeconds: todayTotalSeconds,
+            maxVisibleTasks: maxVisibleTasks
+        )
         repositionDropdown()
     }
 
@@ -1194,6 +1256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
                 tasks,
                 selectedID: selectedTaskID,
                 selectedElapsedSeconds: selectedElapsedSeconds(),
+                todayTotalSeconds: todayTotalSeconds(),
                 maxVisibleTasks: config.maxVisibleTasks
             )
         }
@@ -1296,6 +1359,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
         timeTracker?.elapsedSeconds(for: selectedTaskID) ?? 0
     }
 
+    private func todayTotalSeconds() -> Int {
+        timeTracker?.todayTotalSeconds() ?? 0
+    }
+
     private func displayTitle(for task: TaskEntry) -> String {
         guard !task.id.hasPrefix("__") else {
             return task.title
@@ -1309,6 +1376,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
                 tasks,
                 selectedID: selectedTaskID,
                 selectedElapsedSeconds: selectedElapsedSeconds(),
+                todayTotalSeconds: todayTotalSeconds(),
                 maxVisibleTasks: config.maxVisibleTasks
             )
         }

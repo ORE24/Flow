@@ -60,6 +60,7 @@ final class AppPaths {
     let appSupportDirectory: URL
     let configURL: URL
     let credentialsURL: URL
+    let timeTrackingURL: URL
 
     init() throws {
         let fileManager = FileManager.default
@@ -67,6 +68,7 @@ final class AppPaths {
         appSupportDirectory = supportRoot.appendingPathComponent(appName, isDirectory: true)
         configURL = appSupportDirectory.appendingPathComponent("config.json")
         credentialsURL = appSupportDirectory.appendingPathComponent("credentials.json")
+        timeTrackingURL = appSupportDirectory.appendingPathComponent("time_tracking.json")
 
         try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
 
@@ -84,6 +86,100 @@ final class AppPaths {
             try normalizedData.write(to: configURL, options: .atomic)
         }
         return config
+    }
+}
+
+struct TimeTrackingData: Codable {
+    var totalsByTaskID: [String: Int]
+
+    static let empty = TimeTrackingData(totalsByTaskID: [:])
+}
+
+final class TimeTracker {
+    private let storageURL: URL
+    private var data: TimeTrackingData
+    private var activeTaskID: String?
+    private var activeStartedAt: Date?
+
+    init(storageURL: URL) {
+        self.storageURL = storageURL
+        if
+            let storedData = try? Data(contentsOf: storageURL),
+            let decoded = try? JSONDecoder().decode(TimeTrackingData.self, from: storedData)
+        {
+            data = decoded
+        } else {
+            data = .empty
+        }
+    }
+
+    func start(taskID: String?) {
+        commitActiveElapsed(restart: false)
+        guard let taskID, !taskID.hasPrefix("__") else {
+            activeTaskID = nil
+            activeStartedAt = nil
+            save()
+            return
+        }
+        activeTaskID = taskID
+        activeStartedAt = Date()
+        save()
+    }
+
+    func elapsedSeconds(for taskID: String?) -> Int {
+        guard let taskID, !taskID.hasPrefix("__") else {
+            return 0
+        }
+        var seconds = data.totalsByTaskID[taskID, default: 0]
+        if taskID == activeTaskID, let activeStartedAt {
+            seconds += max(0, Int(Date().timeIntervalSince(activeStartedAt)))
+        }
+        return seconds
+    }
+
+    func adjustActiveTask(byMinutes minutes: Int) {
+        guard let activeTaskID, !activeTaskID.hasPrefix("__") else {
+            return
+        }
+        commitActiveElapsed(restart: true)
+        let adjustedSeconds = data.totalsByTaskID[activeTaskID, default: 0] + minutes * 60
+        data.totalsByTaskID[activeTaskID] = max(0, adjustedSeconds)
+        save()
+    }
+
+    func resetActiveTask() {
+        guard let activeTaskID, !activeTaskID.hasPrefix("__") else {
+            return
+        }
+        data.totalsByTaskID[activeTaskID] = 0
+        activeStartedAt = Date()
+        save()
+    }
+
+    func commitActiveElapsed(restart: Bool) {
+        guard let activeTaskID, !activeTaskID.hasPrefix("__"), let activeStartedAt else {
+            return
+        }
+        let elapsed = max(0, Int(Date().timeIntervalSince(activeStartedAt)))
+        if elapsed > 0 {
+            data.totalsByTaskID[activeTaskID, default: 0] += elapsed
+        }
+        self.activeStartedAt = restart ? Date() : nil
+        save()
+    }
+
+    func save() {
+        guard let encoded = try? JSONEncoder.pretty.encode(data) else {
+            return
+        }
+        try? encoded.write(to: storageURL, options: .atomic)
+    }
+
+    static func format(seconds: Int) -> String {
+        let clamped = max(0, seconds)
+        let hours = clamped / 3600
+        let minutes = (clamped % 3600) / 60
+        return String(format: "%02d:%02d", hours, minutes)
     }
 }
 
@@ -609,11 +705,11 @@ final class OverlayView: NSView {
         let font = label.font ?? NSFont.boldSystemFont(ofSize: 16)
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
         let rect = (text as NSString).boundingRect(
-            with: NSSize(width: 420, height: 28),
+            with: NSSize(width: 560, height: 28),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: attributes
         )
-        frame.size = NSSize(width: min(max(ceil(rect.width) + 28, 96), 420), height: 28)
+        frame.size = NSSize(width: min(max(ceil(rect.width) + 28, 96), 560), height: 28)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -627,6 +723,8 @@ final class OverlayView: NSView {
 
 protocol DropdownViewDelegate: AnyObject {
     func dropdownView(_ dropdownView: DropdownView, didSelectTaskAt index: Int)
+    func dropdownView(_ dropdownView: DropdownView, didAdjustActiveTaskByMinutes minutes: Int)
+    func dropdownViewDidResetActiveTaskTime(_ dropdownView: DropdownView)
     func dropdownViewDidRequestClose(_ dropdownView: DropdownView)
 }
 
@@ -698,7 +796,34 @@ final class TaskRowButton: NSButton {
     }
 }
 
+final class TimeAdjustButton: NSButton {
+    init(title: String, target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        isBordered = false
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.backgroundColor = FlowTheme.selectedBlue.cgColor
+        setButtonType(.momentaryChange)
+        attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.boldSystemFont(ofSize: 12),
+                .foregroundColor: FlowTheme.deepWaveBlue,
+            ]
+        )
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
 final class DropdownView: NSView {
+    private let timeControlsView = NSStackView()
+    private let timeLabel = NSTextField(labelWithString: "Time 00:00")
     private let scrollView = NSScrollView()
     private let stackView = NSStackView()
     private(set) var preferredSize = NSSize(width: 220, height: 44)
@@ -713,6 +838,34 @@ final class DropdownView: NSView {
         layer?.borderWidth = 1
         layer?.cornerRadius = 8
         layer?.masksToBounds = true
+
+        timeLabel.font = NSFont.boldSystemFont(ofSize: 13)
+        timeLabel.textColor = FlowTheme.deepWaveBlue
+        timeLabel.alignment = .left
+        timeLabel.lineBreakMode = .byTruncatingTail
+        timeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        timeControlsView.orientation = .horizontal
+        timeControlsView.alignment = .centerY
+        timeControlsView.distribution = .fill
+        timeControlsView.spacing = 6
+        timeControlsView.translatesAutoresizingMaskIntoConstraints = false
+
+        let minusButton = TimeAdjustButton(title: "-10m", target: self, action: #selector(minusTenMinutes))
+        let plusTenButton = TimeAdjustButton(title: "+10m", target: self, action: #selector(plusTenMinutes))
+        let plusThirtyButton = TimeAdjustButton(title: "+30m", target: self, action: #selector(plusThirtyMinutes))
+        let resetButton = TimeAdjustButton(title: "Reset", target: self, action: #selector(resetTime))
+        [minusButton, plusTenButton, plusThirtyButton, resetButton].forEach { button in
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        }
+
+        timeControlsView.addArrangedSubview(timeLabel)
+        timeControlsView.addArrangedSubview(minusButton)
+        timeControlsView.addArrangedSubview(plusTenButton)
+        timeControlsView.addArrangedSubview(plusThirtyButton)
+        timeControlsView.addArrangedSubview(resetButton)
+        addSubview(timeControlsView)
 
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -729,9 +882,14 @@ final class DropdownView: NSView {
         scrollView.documentView = stackView
         addSubview(scrollView)
         NSLayoutConstraint.activate([
+            timeControlsView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            timeControlsView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            timeControlsView.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            timeControlsView.heightAnchor.constraint(equalToConstant: 24),
+            timeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 74),
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             scrollView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            scrollView.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            scrollView.topAnchor.constraint(equalTo: timeControlsView.bottomAnchor, constant: 6),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
         ])
     }
@@ -740,8 +898,9 @@ final class DropdownView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func setTasks(_ tasks: [TaskEntry], selectedID: String?, maxVisibleTasks: Int) {
+    func setTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, maxVisibleTasks: Int) {
         self.maxVisibleTasks = max(1, maxVisibleTasks)
+        timeLabel.stringValue = "Time \(TimeTracker.format(seconds: selectedElapsedSeconds))"
         stackView.arrangedSubviews.forEach { view in
             stackView.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -750,7 +909,7 @@ final class DropdownView: NSView {
         let rowHeight: CGFloat = 28
         let rowSpacing: CGFloat = 2
         let horizontalPadding: CGFloat = 20
-        let verticalPadding: CGFloat = 16
+        let verticalPadding: CGFloat = 54
 
         for (index, task) in tasks.enumerated() {
             let isSelected = task.id == selectedID
@@ -775,7 +934,7 @@ final class DropdownView: NSView {
         let documentSpacing = rowSpacing * CGFloat(max(tasks.count - 1, 0))
         let documentHeight = verticalPadding + rowHeight * rowCount + documentSpacing
         preferredSize = NSSize(
-            width: min(max(ceil(rect.width) + horizontalPadding, 160), 360),
+            width: min(max(ceil(rect.width) + horizontalPadding, 300), 420),
             height: verticalPadding + rowHeight * visibleRowCount + visibleSpacing
         )
         let documentSize = NSSize(width: preferredSize.width - horizontalPadding, height: documentHeight - verticalPadding)
@@ -789,6 +948,22 @@ final class DropdownView: NSView {
 
     @objc private func selectTask(_ sender: TaskRowButton) {
         delegate?.dropdownView(self, didSelectTaskAt: sender.taskIndex)
+    }
+
+    @objc private func minusTenMinutes() {
+        delegate?.dropdownView(self, didAdjustActiveTaskByMinutes: -10)
+    }
+
+    @objc private func plusTenMinutes() {
+        delegate?.dropdownView(self, didAdjustActiveTaskByMinutes: 10)
+    }
+
+    @objc private func plusThirtyMinutes() {
+        delegate?.dropdownView(self, didAdjustActiveTaskByMinutes: 30)
+    }
+
+    @objc private func resetTime() {
+        delegate?.dropdownViewDidResetActiveTaskTime(self)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -858,8 +1033,8 @@ final class ScreenOverlay {
         }
     }
 
-    func updateTasks(_ tasks: [TaskEntry], selectedID: String?, maxVisibleTasks: Int) {
-        dropdownView.setTasks(tasks, selectedID: selectedID, maxVisibleTasks: maxVisibleTasks)
+    func updateTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, maxVisibleTasks: Int) {
+        dropdownView.setTasks(tasks, selectedID: selectedID, selectedElapsedSeconds: selectedElapsedSeconds, maxVisibleTasks: maxVisibleTasks)
         repositionDropdown()
     }
 
@@ -926,14 +1101,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
     private var overlays: [ScreenOverlay] = []
     private var localKeyMonitor: Any?
     private var globalMouseMonitor: Any?
+    private var trackingTimer: Timer?
     private var singleInstanceLock: SingleInstanceLock?
     private var paths: AppPaths?
     private var config = AppConfig.defaultValue
     private var tasksClient: GoogleTasksClient?
+    private var timeTracker: TimeTracker?
     private var tasks: [TaskEntry] = []
     private var selectedTaskID: String?
     private var dropdownVisible = false
     private var ignoreGlobalMouseEventsUntil: Date?
+    private var lastTrackingAutosave = Date()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -946,6 +1124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
             singleInstanceLock = try SingleInstanceLock(lockURL: paths.appSupportDirectory.appendingPathComponent("Flow.lock"))
             config = try paths.loadConfig()
             tasksClient = GoogleTasksClient(paths: paths, config: config)
+            timeTracker = TimeTracker(storageURL: paths.timeTrackingURL)
         } catch AppError.alreadyRunning {
             NSApp.terminate(nil)
             return
@@ -961,6 +1140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
 
         updateStatus("불러오는 중")
         refreshTask()
+        startTrackingTimer()
 
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             if event.keyCode == 53 {
@@ -981,12 +1161,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        timeTracker?.commitActiveElapsed(restart: false)
         if let localKeyMonitor {
             NSEvent.removeMonitor(localKeyMonitor)
         }
         if let globalMouseMonitor {
             NSEvent.removeMonitor(globalMouseMonitor)
         }
+        trackingTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -1008,7 +1190,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
         createOverlays()
         overlays.forEach { overlay in
             overlay.updateTitle(title)
-            overlay.updateTasks(tasks, selectedID: selectedTaskID, maxVisibleTasks: config.maxVisibleTasks)
+            overlay.updateTasks(
+                tasks,
+                selectedID: selectedTaskID,
+                selectedElapsedSeconds: selectedElapsedSeconds(),
+                maxVisibleTasks: config.maxVisibleTasks
+            )
         }
     }
 
@@ -1029,13 +1216,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
             self.tasks = tasks.isEmpty ? [TaskEntry(id: "__empty__", title: "지금 표시할 task가 없어요", position: "")] : tasks
             if let selectedTaskID = self.selectedTaskID, self.tasks.contains(where: { $0.id == selectedTaskID }) {
                 let selected = self.tasks.first { $0.id == selectedTaskID }!
-                self.overlays.forEach { $0.updateTitle(selected.title) }
+                self.timeTracker?.start(taskID: selected.id)
+                self.overlays.forEach { $0.updateTitle(self.displayTitle(for: selected)) }
             } else {
                 self.selectedTaskID = self.tasks[0].id
                 self.saveSelectedTaskID(self.selectedTaskID)
-                self.overlays.forEach { $0.updateTitle(self.tasks[0].title) }
+                self.timeTracker?.start(taskID: self.selectedTaskID)
+                self.overlays.forEach { $0.updateTitle(self.displayTitle(for: self.tasks[0])) }
             }
-            self.overlays.forEach { $0.updateTasks(self.tasks, selectedID: self.selectedTaskID, maxVisibleTasks: self.config.maxVisibleTasks) }
+            self.updateDropdowns()
         }
     }
 
@@ -1043,11 +1232,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
         guard tasks.indices.contains(index) else { return }
         selectedTaskID = tasks[index].id
         saveSelectedTaskID(selectedTaskID)
+        timeTracker?.start(taskID: selectedTaskID)
         overlays.forEach { overlay in
-            overlay.updateTitle(tasks[index].title)
-            overlay.updateTasks(tasks, selectedID: selectedTaskID, maxVisibleTasks: config.maxVisibleTasks)
+            overlay.updateTitle(displayTitle(for: tasks[index]))
         }
+        updateDropdowns()
         hideDropdown()
+    }
+
+    func dropdownView(_ dropdownView: DropdownView, didAdjustActiveTaskByMinutes minutes: Int) {
+        timeTracker?.adjustActiveTask(byMinutes: minutes)
+        refreshDisplayedTime()
+    }
+
+    func dropdownViewDidResetActiveTaskTime(_ dropdownView: DropdownView) {
+        timeTracker?.resetActiveTask()
+        refreshDisplayedTime()
     }
 
     func dropdownViewDidRequestClose(_ dropdownView: DropdownView) {
@@ -1087,9 +1287,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
 
     private func selectedTitle() -> String {
         if let selectedTaskID, let selected = tasks.first(where: { $0.id == selectedTaskID }) {
-            return selected.title
+            return displayTitle(for: selected)
         }
         return tasks.first?.title ?? config.fallbackText
+    }
+
+    private func selectedElapsedSeconds() -> Int {
+        timeTracker?.elapsedSeconds(for: selectedTaskID) ?? 0
+    }
+
+    private func displayTitle(for task: TaskEntry) -> String {
+        guard !task.id.hasPrefix("__") else {
+            return task.title
+        }
+        return "\(task.title) \(TimeTracker.format(seconds: timeTracker?.elapsedSeconds(for: task.id) ?? 0))"
+    }
+
+    private func updateDropdowns() {
+        overlays.forEach {
+            $0.updateTasks(
+                tasks,
+                selectedID: selectedTaskID,
+                selectedElapsedSeconds: selectedElapsedSeconds(),
+                maxVisibleTasks: config.maxVisibleTasks
+            )
+        }
+    }
+
+    private func refreshDisplayedTime() {
+        guard let selectedTaskID, let selected = tasks.first(where: { $0.id == selectedTaskID }) else {
+            return
+        }
+        overlays.forEach { $0.updateTitle(displayTitle(for: selected)) }
+        updateDropdowns()
+    }
+
+    private func startTrackingTimer() {
+        trackingTimer?.invalidate()
+        trackingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.refreshDisplayedTime()
+            if Date().timeIntervalSince(self.lastTrackingAutosave) >= 60 {
+                self.timeTracker?.commitActiveElapsed(restart: true)
+                self.lastTrackingAutosave = Date()
+            }
+        }
     }
 
     private func refreshTask() {

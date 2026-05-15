@@ -78,6 +78,7 @@ Flow는 사용자의 Google Tasks를 읽기 위해 Google OAuth 인증이 필요
 - Task Left Click: List open
 - Task Right Click: Terminate
 - List Click: Select Current Task
+- `Pause` / `Resume`: Pause or resume Current Task Time
 - `-10m`, `+10m`, `+30m`: Adjust Today's Current Task Time
 - `Reset`: Reset Today's Current Task Time
 

@@ -135,6 +135,28 @@ final class TimeTracker {
         save()
     }
 
+    func pause() {
+        commitActiveElapsed(restart: false)
+    }
+
+    func resume() {
+        rolloverIfNeeded()
+        guard let activeTaskID, !activeTaskID.hasPrefix("__") else {
+            return
+        }
+        activeStartedAt = Date()
+        activeDateKey = Self.todayKey()
+        save()
+    }
+
+    func togglePaused() {
+        isPaused ? resume() : pause()
+    }
+
+    var isPaused: Bool {
+        activeTaskID != nil && activeStartedAt == nil
+    }
+
     func elapsedSeconds(for taskID: String?) -> Int {
         rolloverIfNeeded()
         guard let taskID, !taskID.hasPrefix("__") else {
@@ -780,6 +802,7 @@ final class OverlayView: NSView {
 protocol DropdownViewDelegate: AnyObject {
     func dropdownView(_ dropdownView: DropdownView, didSelectTaskAt index: Int)
     func dropdownView(_ dropdownView: DropdownView, didAdjustActiveTaskByMinutes minutes: Int)
+    func dropdownViewDidTogglePause(_ dropdownView: DropdownView)
     func dropdownViewDidResetActiveTaskTime(_ dropdownView: DropdownView)
     func dropdownViewDidRequestClose(_ dropdownView: DropdownView)
 }
@@ -880,6 +903,7 @@ final class TimeAdjustButton: NSButton {
 final class DropdownView: NSView {
     private let timeControlsView = NSStackView()
     private let timeLabel = NSTextField(labelWithString: "Time 00:00")
+    private let pauseButton = TimeAdjustButton(title: "Pause", target: nil, action: nil)
     private let scrollView = NSScrollView()
     private let stackView = NSStackView()
     private(set) var preferredSize = NSSize(width: 220, height: 44)
@@ -911,12 +935,15 @@ final class DropdownView: NSView {
         let plusTenButton = TimeAdjustButton(title: "+10m", target: self, action: #selector(plusTenMinutes))
         let plusThirtyButton = TimeAdjustButton(title: "+30m", target: self, action: #selector(plusThirtyMinutes))
         let resetButton = TimeAdjustButton(title: "Reset", target: self, action: #selector(resetTime))
-        [minusButton, plusTenButton, plusThirtyButton, resetButton].forEach { button in
+        pauseButton.target = self
+        pauseButton.action = #selector(togglePause)
+        [pauseButton, minusButton, plusTenButton, plusThirtyButton, resetButton].forEach { button in
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
             button.heightAnchor.constraint(equalToConstant: 22).isActive = true
         }
 
         timeControlsView.addArrangedSubview(timeLabel)
+        timeControlsView.addArrangedSubview(pauseButton)
         timeControlsView.addArrangedSubview(minusButton)
         timeControlsView.addArrangedSubview(plusTenButton)
         timeControlsView.addArrangedSubview(plusThirtyButton)
@@ -954,9 +981,16 @@ final class DropdownView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func setTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, todayTotalSeconds: Int, maxVisibleTasks: Int) {
+    func setTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, todayTotalSeconds: Int, isPaused: Bool, maxVisibleTasks: Int) {
         self.maxVisibleTasks = max(1, maxVisibleTasks)
         timeLabel.stringValue = "Today \(TimeTracker.format(seconds: todayTotalSeconds)) / 24:00 · Task \(TimeTracker.format(seconds: selectedElapsedSeconds))"
+        pauseButton.attributedTitle = NSAttributedString(
+            string: isPaused ? "Resume" : "Pause",
+            attributes: [
+                .font: NSFont.boldSystemFont(ofSize: 12),
+                .foregroundColor: FlowTheme.deepWaveBlue,
+            ]
+        )
         stackView.arrangedSubviews.forEach { view in
             stackView.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -1008,6 +1042,10 @@ final class DropdownView: NSView {
 
     @objc private func minusTenMinutes() {
         delegate?.dropdownView(self, didAdjustActiveTaskByMinutes: -10)
+    }
+
+    @objc private func togglePause() {
+        delegate?.dropdownViewDidTogglePause(self)
     }
 
     @objc private func plusTenMinutes() {
@@ -1089,12 +1127,13 @@ final class ScreenOverlay {
         }
     }
 
-    func updateTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, todayTotalSeconds: Int, maxVisibleTasks: Int) {
+    func updateTasks(_ tasks: [TaskEntry], selectedID: String?, selectedElapsedSeconds: Int, todayTotalSeconds: Int, isPaused: Bool, maxVisibleTasks: Int) {
         dropdownView.setTasks(
             tasks,
             selectedID: selectedID,
             selectedElapsedSeconds: selectedElapsedSeconds,
             todayTotalSeconds: todayTotalSeconds,
+            isPaused: isPaused,
             maxVisibleTasks: maxVisibleTasks
         )
         repositionDropdown()
@@ -1257,6 +1296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
                 selectedID: selectedTaskID,
                 selectedElapsedSeconds: selectedElapsedSeconds(),
                 todayTotalSeconds: todayTotalSeconds(),
+                isPaused: isTrackingPaused(),
                 maxVisibleTasks: config.maxVisibleTasks
             )
         }
@@ -1305,6 +1345,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
 
     func dropdownView(_ dropdownView: DropdownView, didAdjustActiveTaskByMinutes minutes: Int) {
         timeTracker?.adjustActiveTask(byMinutes: minutes)
+        refreshDisplayedTime()
+    }
+
+    func dropdownViewDidTogglePause(_ dropdownView: DropdownView) {
+        timeTracker?.togglePaused()
         refreshDisplayedTime()
     }
 
@@ -1363,11 +1408,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
         timeTracker?.todayTotalSeconds() ?? 0
     }
 
+    private func isTrackingPaused() -> Bool {
+        timeTracker?.isPaused ?? false
+    }
+
     private func displayTitle(for task: TaskEntry) -> String {
         guard !task.id.hasPrefix("__") else {
             return task.title
         }
-        return "\(task.title) \(TimeTracker.format(seconds: timeTracker?.elapsedSeconds(for: task.id) ?? 0))"
+        let suffix = isTrackingPaused() && task.id == selectedTaskID ? " Paused" : ""
+        return "\(task.title) \(TimeTracker.format(seconds: timeTracker?.elapsedSeconds(for: task.id) ?? 0))\(suffix)"
     }
 
     private func updateDropdowns() {
@@ -1377,6 +1427,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DropdownViewDelegate {
                 selectedID: selectedTaskID,
                 selectedElapsedSeconds: selectedElapsedSeconds(),
                 todayTotalSeconds: todayTotalSeconds(),
+                isPaused: isTrackingPaused(),
                 maxVisibleTasks: config.maxVisibleTasks
             )
         }
